@@ -1,0 +1,194 @@
+const { NetWorthSnapshot } = require('../models/NetWorthSnapshot');
+
+class NetWorthEngine {
+  constructor(dataStore) {
+    this.store = dataStore;
+  }
+
+  calculateCurrentNetWorth() {
+    const accounts = this.store.accounts;
+    let totalAssets = 0;
+    let totalLiabilities = 0;
+    const accountDetails = [];
+
+    for (const account of accounts) {
+      const value = account.getNetValue();
+
+      if (account.isAsset()) {
+        totalAssets += Math.abs(value);
+      } else {
+        totalLiabilities += Math.abs(value);
+      }
+
+      accountDetails.push({
+        id: account.id,
+        name: account.name,
+        institution: account.institution,
+        type: account.type,
+        value: value,
+        isAsset: account.isAsset(),
+      });
+    }
+
+    return {
+      totalAssets,
+      totalLiabilities,
+      netWorth: totalAssets - totalLiabilities,
+      accounts: accountDetails,
+    };
+  }
+
+  takeSnapshot() {
+    const current = this.calculateCurrentNetWorth();
+    const snapshot = new NetWorthSnapshot({
+      date: new Date().toISOString().split('T')[0],
+      accounts: current.accounts,
+      totalAssets: current.totalAssets,
+      totalLiabilities: current.totalLiabilities,
+      netWorth: current.netWorth,
+    });
+    return this.store.addSnapshot(snapshot);
+  }
+
+  getNetWorthHistory(limit) {
+    return this.store.getSnapshots(limit);
+  }
+
+  getNetWorthChange(period = 'month') {
+    const snapshots = this.store.getSnapshots();
+    if (snapshots.length < 2) {
+      const current = this.calculateCurrentNetWorth();
+      return {
+        current: current.netWorth,
+        previous: current.netWorth,
+        change: 0,
+        changePercent: 0,
+        period,
+      };
+    }
+
+    const now = new Date();
+    let cutoffDate;
+    switch (period) {
+      case 'week':
+        cutoffDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case 'month':
+        cutoffDate = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+        break;
+      case 'quarter':
+        cutoffDate = new Date(now.getFullYear(), now.getMonth() - 3, now.getDate());
+        break;
+      case 'year':
+        cutoffDate = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+        break;
+      default:
+        cutoffDate = new Date(now.getFullYear(), now.getMonth() - 1, now.getDate());
+    }
+
+    const cutoff = cutoffDate.toISOString().split('T')[0];
+    const previous = snapshots.find(s => s.date <= cutoff) || snapshots[snapshots.length - 1];
+    const current = snapshots[0];
+
+    const change = current.netWorth - previous.netWorth;
+    const changePercent = previous.netWorth !== 0 ? (change / Math.abs(previous.netWorth)) * 100 : 0;
+
+    return {
+      current: current.netWorth,
+      previous: previous.netWorth,
+      change,
+      changePercent,
+      period,
+      currentDate: current.date,
+      previousDate: previous.date,
+    };
+  }
+
+  getBreakdownByInstitution() {
+    const accounts = this.store.accounts;
+    const byInstitution = {};
+
+    for (const account of accounts) {
+      const inst = account.institution;
+      if (!byInstitution[inst]) {
+        byInstitution[inst] = { assets: 0, liabilities: 0, accounts: [] };
+      }
+
+      const value = account.getNetValue();
+      if (account.isAsset()) {
+        byInstitution[inst].assets += Math.abs(value);
+      } else {
+        byInstitution[inst].liabilities += Math.abs(value);
+      }
+
+      byInstitution[inst].accounts.push({
+        name: account.name,
+        type: account.type,
+        value: value,
+      });
+    }
+
+    const total = Object.values(byInstitution).reduce(
+      (sum, inst) => sum + inst.assets - inst.liabilities, 0
+    );
+
+    return Object.entries(byInstitution).map(([institution, data]) => ({
+      institution,
+      assets: data.assets,
+      liabilities: data.liabilities,
+      netValue: data.assets - data.liabilities,
+      percent: total > 0 ? ((data.assets - data.liabilities) / total) * 100 : 0,
+      accounts: data.accounts,
+    })).sort((a, b) => b.netValue - a.netValue);
+  }
+
+  getBreakdownByType() {
+    const accounts = this.store.accounts;
+    const byType = {};
+
+    for (const account of accounts) {
+      const type = account.type;
+      if (!byType[type]) byType[type] = { total: 0, count: 0 };
+      byType[type].total += account.getNetValue();
+      byType[type].count++;
+    }
+
+    const netWorth = Object.values(byType).reduce((sum, t) => sum + t.total, 0);
+
+    return Object.entries(byType).map(([type, data]) => ({
+      type,
+      total: data.total,
+      count: data.count,
+      percent: netWorth !== 0 ? (data.total / netWorth) * 100 : 0,
+    })).sort((a, b) => b.total - a.total);
+  }
+
+  getAssetAllocation() {
+    const accounts = this.store.accounts;
+    const allocation = {};
+
+    for (const account of accounts) {
+      if (!account.isAsset()) continue;
+      if (account.holdings && account.holdings.length > 0) {
+        for (const h of account.holdings) {
+          const type = h.type || 'Stocks';
+          if (!allocation[type]) allocation[type] = 0;
+          allocation[type] += h.shares * h.currentPrice;
+        }
+      } else {
+        const type = account.type === 'checking' || account.type === 'savings' ? 'Cash' : 'Other';
+        if (!allocation[type]) allocation[type] = 0;
+        allocation[type] += account.balance;
+      }
+    }
+
+    const total = Object.values(allocation).reduce((sum, v) => sum + v, 0);
+    return Object.entries(allocation).map(([type, value]) => ({
+      type,
+      value,
+      percent: total > 0 ? (value / total) * 100 : 0,
+    })).sort((a, b) => b.value - a.value);
+  }
+}
+
+module.exports = { NetWorthEngine };

@@ -1,0 +1,16 @@
+{
+  "name": "budget-net-worth-tracker",
+  "version": "1.0.0",
+  "description": "Comprehensive budget and net worth tracking tool across Robinhood, Chase, Vanguard, and Amex accounts",
+  "main": "src/index.js",
+  "bin": {
+    "finance-tracker": "./src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "demo": "node src/index.js --demo",
+    "test": "node src/test.js"
+  },
+  "keywords": ["budget", "net-worth", "finance", "tracker"],
+  "license": "MIT"
+}
