@@ -1,11 +1,13 @@
 const { currency, percentage, colorize, progressBar, sparkline, table, pad, monthKey } = require('../utils/format');
 
 class Dashboard {
-  constructor(dataStore, budgetEngine, netWorthEngine, managers) {
+  constructor(dataStore, budgetEngine, netWorthEngine, managers, goalsEngine, recurringEngine) {
     this.store = dataStore;
     this.budget = budgetEngine;
     this.netWorth = netWorthEngine;
     this.managers = managers;
+    this.goals = goalsEngine || null;
+    this.recurring = recurringEngine || null;
   }
 
   renderHeader() {
@@ -46,6 +48,15 @@ class Dashboard {
     if (snapshots.length > 1) {
       const values = snapshots.reverse().map(s => s.netWorth);
       lines.push('    12-Month Trend:  ' + colorize(sparkline(values), 'cyan'));
+      lines.push('');
+    }
+
+    // Forecast
+    const forecast = this.netWorth.forecast(12);
+    if (forecast.avgMonthlyGrowth !== 0) {
+      const growthColor = forecast.avgMonthlyGrowth >= 0 ? 'green' : 'red';
+      const arrow = forecast.avgMonthlyGrowth >= 0 ? '▲' : '▼';
+      lines.push(`    Avg Growth/Mo:   ${colorize(`${arrow} ${currency(Math.abs(forecast.avgMonthlyGrowth))}`, growthColor)}    12-Mo Forecast: ${colorize(currency(forecast.projections[11].projected), growthColor)}`);
       lines.push('');
     }
 
@@ -267,12 +278,136 @@ class Dashboard {
     return lines.join('\n');
   }
 
+  renderGoalsSummary() {
+    const lines = [];
+    lines.push(colorize('  ── FINANCIAL GOALS ─────────────────────────────────────────────', 'blue'));
+    lines.push('');
+
+    if (!this.goals || this.store.goals.length === 0) {
+      lines.push('    No financial goals set. Use "Financial Goals" to get started.');
+      lines.push('');
+      return lines.join('\n');
+    }
+
+    const summary = this.goals.getGoalsSummary();
+
+    lines.push(`    Active: ${colorize(String(summary.activeCount), 'cyan')}    Completed: ${colorize(String(summary.completedCount), 'green')}    Overall: ${colorize(summary.overallProgress.toFixed(1) + '%', 'yellow')}`);
+    lines.push('');
+
+    for (const g of summary.goals) {
+      const statusIcon = g.isComplete ? colorize('✓', 'green') : g.onTrack === false ? colorize('!', 'red') : colorize('○', 'cyan');
+      const progressColor = g.progress >= 100 ? 'green' : g.progress >= 50 ? 'yellow' : 'white';
+
+      lines.push(`    ${statusIcon} ${pad(g.name, 30)} ${progressBar(g.progress, 100, 15)} ${colorize(g.progress.toFixed(0) + '%', progressColor)}`);
+      lines.push(`      ${colorize(currency(g.currentAmount), 'green')} / ${currency(g.targetAmount)}` +
+        (g.daysRemaining !== null ? `  ${colorize(g.daysRemaining + ' days left', g.daysRemaining < 30 ? 'red' : 'gray')}` : '') +
+        (g.monthlyNeeded > 0 && !g.isComplete ? `  Need ${colorize(currency(g.monthlyNeeded) + '/mo', 'yellow')}` : ''));
+    }
+    lines.push('');
+
+    return lines.join('\n');
+  }
+
+  renderRecurringSummary() {
+    const lines = [];
+    lines.push(colorize('  ── RECURRING TRANSACTIONS ──────────────────────────────────────', 'blue'));
+    lines.push('');
+
+    if (!this.recurring || this.store.recurringTransactions.length === 0) {
+      lines.push('    No recurring transactions set up.');
+      lines.push('');
+      return lines.join('\n');
+    }
+
+    const projection = this.recurring.getMonthlyProjection();
+    lines.push(`    Monthly Recurring:  Income ${colorize(currency(projection.totalIncome), 'green')}   Expenses ${colorize(currency(projection.totalExpenses), 'red')}   Net ${colorize(currency(projection.netMonthly), projection.netMonthly >= 0 ? 'green' : 'red')}`);
+    lines.push('');
+
+    const active = this.recurring.getActiveRecurring();
+    for (const r of active.slice(0, 8)) {
+      const typeIcon = r.type === 'income' || r.type === 'dividend' ? colorize('+', 'green') : colorize('-', 'red');
+      const freqLabel = r.frequency.charAt(0).toUpperCase() + r.frequency.slice(1);
+      lines.push(`    ${typeIcon} ${pad(r.description, 28)} ${pad(currency(r.amount), 12, 'right')} ${colorize(pad(freqLabel, 12), 'gray')}`);
+    }
+    if (active.length > 8) {
+      lines.push(colorize(`      ... and ${active.length - 8} more`, 'gray'));
+    }
+    lines.push('');
+
+    // Upcoming
+    const upcoming = this.recurring.getUpcoming(14);
+    if (upcoming.length > 0) {
+      lines.push('    ' + colorize('Upcoming (14 days):', 'bold'));
+      for (const item of upcoming.slice(0, 5)) {
+        const typeColor = item.recurring.type === 'income' ? 'green' : 'red';
+        lines.push(`      ${colorize(item.date, 'gray')}  ${pad(item.recurring.description, 25)} ${colorize(currency(item.recurring.amount), typeColor)}`);
+      }
+      lines.push('');
+    }
+
+    return lines.join('\n');
+  }
+
+  renderForecast() {
+    const lines = [];
+    lines.push(colorize('  ── NET WORTH FORECAST ──────────────────────────────────────────', 'blue'));
+    lines.push('');
+
+    const forecast = this.netWorth.forecast(12);
+    if (forecast.avgMonthlyGrowth === 0) {
+      lines.push('    Not enough snapshot data to generate a forecast.');
+      lines.push('');
+      return lines.join('\n');
+    }
+
+    const growthColor = forecast.avgMonthlyGrowth >= 0 ? 'green' : 'red';
+    lines.push(`    Current Net Worth:    ${colorize(currency(forecast.currentNetWorth), 'bold')}`);
+    lines.push(`    Avg Monthly Growth:   ${colorize(currency(forecast.avgMonthlyGrowth), growthColor)}`);
+    lines.push(`    Projected (12 mo):    ${colorize(currency(forecast.projections[11].projected), growthColor)}`);
+    lines.push('');
+
+    // Sparkline of projected values
+    const projValues = forecast.projections.map(p => p.projected);
+    lines.push('    Projection:  ' + colorize(sparkline(projValues), 'cyan'));
+    lines.push('');
+
+    // Quarterly projections
+    lines.push('    ' + colorize(pad('Month', 12), 'bold') + colorize(pad('Projected', 16, 'right'), 'bold'));
+    lines.push('    ' + colorize('─'.repeat(30), 'gray'));
+    for (const p of forecast.projections) {
+      if (p.monthsOut % 3 === 0 || p.monthsOut === 1) {
+        lines.push(`    ${pad(p.date.substring(0, 7), 12)} ${colorize(pad(currency(p.projected), 16, 'right'), growthColor)}`);
+      }
+    }
+    lines.push('');
+
+    // Milestones
+    const milestones = this.netWorth.getMilestones();
+    if (milestones.length > 0) {
+      lines.push('    ' + colorize('Milestones:', 'bold'));
+      for (const m of milestones.slice(0, 3)) {
+        if (m.monthsAway !== null) {
+          const years = Math.floor(m.monthsAway / 12);
+          const months = m.monthsAway % 12;
+          const timeStr = years > 0 ? `${years}y ${months}m` : `${months}m`;
+          lines.push(`      ${colorize(currency(m.target), 'cyan')}  in ~${colorize(timeStr, 'yellow')} (${m.estimatedDate.substring(0, 7)})`);
+        } else {
+          lines.push(`      ${colorize(currency(m.target), 'cyan')}  ${colorize('needs positive growth', 'red')}`);
+        }
+      }
+      lines.push('');
+    }
+
+    return lines.join('\n');
+  }
+
   renderFullDashboard() {
     let output = '';
     output += this.renderHeader();
     output += this.renderNetWorthSummary();
     output += this.renderAccountsSummary();
     output += this.renderBudgetSummary();
+    output += this.renderGoalsSummary();
     output += this.renderInvestmentSummary();
     output += this.renderCreditSummary();
     output += this.renderRecentTransactions();
@@ -292,6 +427,9 @@ class Dashboard {
     lines.push('    ' + colorize('[7]', 'cyan') + '  Credit & Debt');
     lines.push('    ' + colorize('[8]', 'cyan') + '  Reports & Analytics');
     lines.push('    ' + colorize('[9]', 'cyan') + '  Import / Export Data');
+    lines.push('    ' + colorize('[r]', 'cyan') + '  Recurring Transactions');
+    lines.push('    ' + colorize('[g]', 'cyan') + '  Financial Goals');
+    lines.push('    ' + colorize('[f]', 'cyan') + '  Net Worth Forecast');
     lines.push('    ' + colorize('[0]', 'cyan') + '  Exit');
     lines.push('');
     return lines.join('\n');

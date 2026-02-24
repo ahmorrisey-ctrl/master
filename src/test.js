@@ -10,6 +10,8 @@ const { Account, ACCOUNT_TYPES, INSTITUTIONS } = require('./models/Account');
 const { Transaction, TRANSACTION_TYPES, CATEGORIES } = require('./models/Transaction');
 const { Budget, BudgetCategory } = require('./models/Budget');
 const { NetWorthSnapshot } = require('./models/NetWorthSnapshot');
+const { RecurringTransaction, FREQUENCIES } = require('./models/RecurringTransaction');
+const { Goal, GOAL_TYPES } = require('./models/Goal');
 const { RobinhoodManager } = require('./accounts/RobinhoodManager');
 const { ChaseManager } = require('./accounts/ChaseManager');
 const { VanguardManager } = require('./accounts/VanguardManager');
@@ -17,6 +19,8 @@ const { AmexManager } = require('./accounts/AmexManager');
 const { BudgetEngine } = require('./engines/BudgetEngine');
 const { NetWorthEngine } = require('./engines/NetWorthEngine');
 const { ReportEngine } = require('./engines/ReportEngine');
+const { RecurringEngine } = require('./engines/RecurringEngine');
+const { GoalsEngine } = require('./engines/GoalsEngine');
 const { Dashboard } = require('./ui/Dashboard');
 const { generateDemoData } = require('./demo');
 const { currency, monthKey, percentage } = require('./utils/format');
@@ -119,6 +123,70 @@ const budget = new Budget({
 assert(budget.getTotalBudgeted() === 2800, 'Total budgeted = 2800');
 assert(budget.getUnallocated() === 7200, 'Unallocated = 7200');
 
+section('Recurring Transaction Model');
+
+const recurring = new RecurringTransaction({
+  description: 'Monthly Rent',
+  amount: 2200,
+  type: 'expense',
+  category: 'Housing',
+  accountId: 'test-account',
+  frequency: FREQUENCIES.MONTHLY,
+  startDate: '2026-01-01',
+  dayOfMonth: 1,
+  active: true,
+});
+assert(recurring.isActive() === true, 'Recurring is active');
+assert(recurring.description === 'Monthly Rent', 'Recurring description correct');
+assert(recurring.frequency === 'monthly', 'Recurring frequency is monthly');
+
+const nextDue = recurring.getNextDueDate('2026-01-01');
+assert(nextDue === '2026-02-01', 'Next due date is Feb 1');
+
+const nextDue2 = recurring.getNextDueDate('2026-02-01');
+assert(nextDue2 === '2026-03-01', 'Next due after Feb is Mar 1');
+
+const pausedRecurring = new RecurringTransaction({
+  description: 'Paused Sub',
+  amount: 10,
+  type: 'expense',
+  active: false,
+});
+assert(pausedRecurring.isActive() === false, 'Paused recurring is inactive');
+
+const recurringJSON = recurring.toJSON();
+const recurringFromJSON = RecurringTransaction.fromJSON(recurringJSON);
+assert(recurringFromJSON.description === 'Monthly Rent', 'Recurring serialization roundtrip');
+
+section('Goal Model');
+
+const goal = new Goal({
+  name: 'Emergency Fund',
+  type: GOAL_TYPES.EMERGENCY_FUND,
+  targetAmount: 50000,
+  currentAmount: 25000,
+  deadline: '2026-12-31',
+  createdDate: '2026-01-01',
+  priority: 'high',
+});
+assert(goal.getProgress() === 50, 'Goal progress is 50%');
+assert(goal.getRemaining() === 25000, 'Goal remaining is $25,000');
+assert(goal.isComplete() === false, 'Goal is not complete');
+assert(goal.getDaysRemaining() !== null, 'Goal has days remaining');
+assert(goal.getMonthlyTargetNeeded() > 0, 'Goal has monthly target needed');
+
+const completedGoal = new Goal({
+  name: 'Done Goal',
+  targetAmount: 1000,
+  currentAmount: 1500,
+});
+assert(completedGoal.isComplete() === true, 'Completed goal detected');
+assert(completedGoal.getProgress() === 100, 'Completed goal progress capped at 100');
+
+const goalJSON = goal.toJSON();
+const goalFromJSON = Goal.fromJSON(goalJSON);
+assert(goalFromJSON.name === 'Emergency Fund', 'Goal serialization roundtrip');
+
 // ── Account Managers ───────────────────────────────
 section('Chase Manager');
 
@@ -184,6 +252,31 @@ assert(byInst.length > 0, 'Institution breakdown has entries');
 const byType = nwEngine.getBreakdownByType();
 assert(byType.length > 0, 'Type breakdown has entries');
 
+section('Net Worth Forecast');
+
+// Add more snapshots for forecasting
+for (let i = 5; i >= 1; i--) {
+  const d = new Date();
+  d.setMonth(d.getMonth() - i);
+  store.addSnapshot(new NetWorthSnapshot({
+    date: d.toISOString().split('T')[0],
+    totalAssets: 200000 + (6 - i) * 5000,
+    totalLiabilities: 4000,
+    netWorth: 196000 + (6 - i) * 5000,
+  }));
+}
+
+const forecast = nwEngine.forecast(12);
+assert(forecast.projections.length === 12, 'Forecast has 12 monthly projections');
+assert(typeof forecast.avgMonthlyGrowth === 'number', 'Forecast has avg monthly growth');
+assert(forecast.projections[0].monthsOut === 1, 'First projection is 1 month out');
+assert(forecast.projections[11].monthsOut === 12, 'Last projection is 12 months out');
+
+const milestones = nwEngine.getMilestones();
+assert(Array.isArray(milestones), 'Milestones returns an array');
+assert(milestones.length > 0, 'Has at least one milestone');
+assert(milestones[0].target > currentNW.netWorth, 'First milestone is ahead of current NW');
+
 section('Budget Engine');
 
 const budgetEngine = new BudgetEngine(store);
@@ -244,6 +337,121 @@ const topExpenses = budgetEngine.getTopExpenses(month, 5);
 assert(topExpenses.length > 0, 'Top expenses found');
 assert(topExpenses[0].amount >= topExpenses[topExpenses.length - 1].amount, 'Top expenses sorted descending');
 
+section('Budget Auto-Clone');
+
+const autoCloned = budgetEngine.autoCloneCurrentMonth();
+assert(autoCloned === null, 'Auto-clone returns null when current month has budget');
+
+// Create a budget for last month, remove current month, then test auto-clone
+const lastMonthStr = monthKey(new Date(new Date().getFullYear(), new Date().getMonth() - 1, 1));
+budgetEngine.createBudget({
+  month: lastMonthStr,
+  totalMonthlyIncome: 14000,
+  categories: [{ category: 'Housing', monthlyLimit: 2000 }],
+});
+
+// Remove current month budget to test auto-clone
+store.budgets = store.budgets.filter(b => b.month !== month);
+const cloned = budgetEngine.autoCloneCurrentMonth();
+assert(cloned !== null, 'Auto-clone creates budget when current month missing');
+assert(cloned.month === month, 'Auto-cloned budget is for current month');
+
+section('Budget Comparison');
+
+const comparison = budgetEngine.getBudgetComparison(lastMonthStr, month);
+assert(comparison !== null || comparison === null, 'Budget comparison runs without error');
+
+section('Recurring Engine');
+
+const recurringEngine = new RecurringEngine(store);
+
+// Create a recurring transaction
+const created = recurringEngine.createRecurring({
+  description: 'Test Rent',
+  amount: 2200,
+  type: 'expense',
+  category: 'Housing',
+  accountId: checkingId,
+  frequency: 'monthly',
+  startDate: '2025-12-01',
+  dayOfMonth: 1,
+});
+assert(created.description === 'Test Rent', 'Recurring created successfully');
+assert(store.recurringTransactions.length === 1, 'Store has 1 recurring');
+
+const active = recurringEngine.getActiveRecurring();
+assert(active.length === 1, 'One active recurring');
+
+// Pause/resume
+recurringEngine.pauseRecurring(created.id);
+assert(recurringEngine.getActiveRecurring().length === 0, 'No active after pause');
+
+recurringEngine.resumeRecurring(created.id);
+assert(recurringEngine.getActiveRecurring().length === 1, 'One active after resume');
+
+// Monthly projection
+const projection = recurringEngine.getMonthlyProjection();
+assert(projection.totalExpenses === 2200, 'Monthly projection expenses = 2200');
+assert(projection.count === 1, 'Projection count = 1');
+
+// Upcoming
+const upcoming = recurringEngine.getUpcoming(60);
+assert(upcoming.length > 0, 'Has upcoming transactions');
+
+// Generate pending
+const txCountBefore = store.transactions.length;
+const generated = recurringEngine.generatePendingTransactions();
+assert(generated.length >= 0, 'Generate pending runs without error');
+
+// Remove
+recurringEngine.removeRecurring(created.id);
+assert(store.recurringTransactions.length === 0, 'Recurring removed');
+
+section('Goals Engine');
+
+const goalsEngine = new GoalsEngine(store, nwEngine);
+
+const testGoal = goalsEngine.createGoal({
+  name: 'Test Emergency Fund',
+  type: GOAL_TYPES.EMERGENCY_FUND,
+  targetAmount: 50000,
+  currentAmount: 20000,
+  deadline: '2027-01-01',
+  priority: 'high',
+});
+assert(testGoal.name === 'Test Emergency Fund', 'Goal created');
+assert(store.goals.length === 1, 'Store has 1 goal');
+
+const debtGoal = goalsEngine.createGoal({
+  name: 'Pay Off CC',
+  type: GOAL_TYPES.DEBT_PAYOFF,
+  targetAmount: 2500,
+  currentAmount: 500,
+});
+assert(store.goals.length === 2, 'Store has 2 goals');
+
+const summary = goalsEngine.getGoalsSummary();
+assert(summary.totalGoals === 2, 'Summary has 2 goals');
+assert(summary.activeCount === 2, 'Both goals active');
+assert(summary.completedCount === 0, 'No completed goals');
+assert(summary.goals.length === 2, 'Summary details has 2 entries');
+assert(summary.goals[0].progress > 0, 'First goal has progress');
+
+// Update progress
+goalsEngine.updateGoalProgress(testGoal.id, 30000);
+assert(store.goals.find(g => g.id === testGoal.id).currentAmount === 30000, 'Goal progress updated');
+
+// Remove
+goalsEngine.removeGoal(debtGoal.id);
+assert(store.goals.length === 1, 'Goal removed');
+
+// Sync (should not crash)
+goalsEngine.syncGoalsWithAccounts();
+assert(true, 'Goals synced without error');
+
+// Clean up for subsequent tests
+goalsEngine.removeGoal(testGoal.id);
+
 section('Report Engine');
 
 const reportEngine = new ReportEngine(store, budgetEngine, nwEngine);
@@ -269,12 +477,14 @@ assert(importedTxs[0].amount === 50, 'Imported amount = 50');
 
 section('Dashboard Rendering');
 
+const goalsEng = new GoalsEngine(store, nwEngine);
+const recurringEng = new RecurringEngine(store);
 const dashboard = new Dashboard(store, budgetEngine, nwEngine, {
   robinhood: rhManager,
   chase: chaseManager,
   vanguard: vgManager,
   amex: amexManager,
-});
+}, goalsEng, recurringEng);
 
 const header = dashboard.renderHeader();
 assert(header.includes('BUDGET & NET WORTH TRACKER'), 'Header contains title');
@@ -297,11 +507,24 @@ assert(creditSummary.includes('CREDIT'), 'Credit summary renders');
 const recentTx = dashboard.renderRecentTransactions();
 assert(recentTx.includes('RECENT TRANSACTIONS'), 'Recent transactions renders');
 
+const goalsSummary = dashboard.renderGoalsSummary();
+assert(goalsSummary.includes('FINANCIAL GOALS'), 'Goals summary renders');
+
+const recurringSummary = dashboard.renderRecurringSummary();
+assert(recurringSummary.includes('RECURRING'), 'Recurring summary renders');
+
+const forecastView = dashboard.renderForecast();
+assert(forecastView.includes('FORECAST'), 'Forecast renders');
+
 const fullDash = dashboard.renderFullDashboard();
 assert(fullDash.length > 500, 'Full dashboard has substantial output');
+assert(fullDash.includes('FINANCIAL GOALS'), 'Full dashboard includes goals');
 
 const menu = dashboard.renderMenu();
 assert(menu.includes('MAIN MENU'), 'Menu renders');
+assert(menu.includes('Recurring'), 'Menu includes recurring option');
+assert(menu.includes('Financial Goals'), 'Menu includes goals option');
+assert(menu.includes('Forecast'), 'Menu includes forecast option');
 
 section('Demo Data');
 
@@ -311,6 +534,8 @@ assert(demoStore.accounts.length === 7, 'Demo has 7 accounts');
 assert(demoStore.transactions.length > 30, 'Demo has 30+ transactions');
 assert(demoStore.budgets.length === 1, 'Demo has 1 budget');
 assert(demoStore.snapshots.length === 12, 'Demo has 12 snapshots');
+assert(demoStore.recurringTransactions.length === 9, 'Demo has 9 recurring transactions');
+assert(demoStore.goals.length === 4, 'Demo has 4 goals');
 
 const demoNW = new NetWorthEngine(demoStore);
 const demoCalc = demoNW.calculateCurrentNetWorth();

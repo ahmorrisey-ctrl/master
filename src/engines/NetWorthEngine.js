@@ -189,6 +189,94 @@ class NetWorthEngine {
       percent: total > 0 ? (value / total) * 100 : 0,
     })).sort((a, b) => b.value - a.value);
   }
+
+  forecast(months = 12) {
+    const snapshots = this.store.getSnapshots();
+    const current = this.calculateCurrentNetWorth();
+
+    if (snapshots.length < 2) {
+      // Not enough data, project flat
+      const projections = [];
+      const now = new Date();
+      for (let i = 1; i <= months; i++) {
+        const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+        projections.push({
+          date: d.toISOString().split('T')[0],
+          projected: current.netWorth,
+          monthsOut: i,
+        });
+      }
+      return { currentNetWorth: current.netWorth, avgMonthlyGrowth: 0, projections };
+    }
+
+    // Calculate average monthly growth from snapshot history
+    const sorted = [...snapshots].sort((a, b) => a.date.localeCompare(b.date));
+    const monthlyChanges = [];
+    for (let i = 1; i < sorted.length; i++) {
+      monthlyChanges.push(sorted[i].netWorth - sorted[i - 1].netWorth);
+    }
+
+    const avgMonthlyGrowth = monthlyChanges.reduce((s, v) => s + v, 0) / monthlyChanges.length;
+
+    const projections = [];
+    const now = new Date();
+    for (let i = 1; i <= months; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      projections.push({
+        date: d.toISOString().split('T')[0],
+        projected: current.netWorth + (avgMonthlyGrowth * i),
+        monthsOut: i,
+      });
+    }
+
+    return {
+      currentNetWorth: current.netWorth,
+      avgMonthlyGrowth,
+      projections,
+    };
+  }
+
+  getMilestones() {
+    const current = this.calculateCurrentNetWorth();
+    const forecast = this.forecast(60); // 5 years
+    const nw = current.netWorth;
+    const milestoneValues = [];
+
+    // Generate round-number milestones ahead
+    const base = Math.pow(10, Math.floor(Math.log10(Math.max(nw, 1))));
+    const step = base;
+    let m = Math.ceil(nw / step) * step;
+    for (let i = 0; i < 5; i++) {
+      if (m > nw) milestoneValues.push(m);
+      m += step;
+    }
+
+    // Also add common milestone targets
+    for (const target of [100000, 250000, 500000, 750000, 1000000]) {
+      if (target > nw && !milestoneValues.includes(target)) {
+        milestoneValues.push(target);
+      }
+    }
+    milestoneValues.sort((a, b) => a - b);
+
+    const milestones = [];
+    for (const target of milestoneValues.slice(0, 5)) {
+      if (forecast.avgMonthlyGrowth <= 0) {
+        milestones.push({ target, monthsAway: null, estimatedDate: null });
+        continue;
+      }
+      const monthsAway = Math.ceil((target - nw) / forecast.avgMonthlyGrowth);
+      const estDate = new Date();
+      estDate.setMonth(estDate.getMonth() + monthsAway);
+      milestones.push({
+        target,
+        monthsAway,
+        estimatedDate: estDate.toISOString().split('T')[0],
+      });
+    }
+
+    return milestones;
+  }
 }
 
 module.exports = { NetWorthEngine };

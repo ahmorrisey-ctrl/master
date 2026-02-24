@@ -3,6 +3,8 @@ const { Account } = require('./Account');
 const { Transaction } = require('./Transaction');
 const { Budget, BudgetCategory } = require('./Budget');
 const { NetWorthSnapshot } = require('./NetWorthSnapshot');
+const { RecurringTransaction } = require('./RecurringTransaction');
+const { Goal } = require('./Goal');
 
 class DataStore {
   constructor() {
@@ -10,6 +12,8 @@ class DataStore {
     this.transactions = [];
     this.budgets = [];
     this.snapshots = [];
+    this.recurringTransactions = [];
+    this.goals = [];
     this.settings = {};
   }
 
@@ -34,6 +38,16 @@ class DataStore {
       this.snapshots = snapshotData.map(s => NetWorthSnapshot.fromJSON(s));
     }
 
+    const recurringData = loadJSON('recurring.json');
+    if (recurringData) {
+      this.recurringTransactions = recurringData.map(r => RecurringTransaction.fromJSON(r));
+    }
+
+    const goalsData = loadJSON('goals.json');
+    if (goalsData) {
+      this.goals = goalsData.map(g => Goal.fromJSON(g));
+    }
+
     const settings = loadJSON('settings.json');
     if (settings) {
       this.settings = settings;
@@ -45,6 +59,8 @@ class DataStore {
     saveJSON('transactions.json', this.transactions.map(t => t.toJSON()));
     saveJSON('budgets.json', this.budgets.map(b => b.toJSON()));
     saveJSON('snapshots.json', this.snapshots.map(s => s.toJSON()));
+    saveJSON('recurring.json', this.recurringTransactions.map(r => r.toJSON()));
+    saveJSON('goals.json', this.goals.map(g => g.toJSON()));
     saveJSON('settings.json', this.settings);
   }
 
@@ -182,6 +198,20 @@ class DataStore {
 
   getLatestSnapshot() {
     return this.getSnapshots(1)[0] || null;
+  }
+
+  // Recurring transaction operations
+  addRecurring(recurring) {
+    this.recurringTransactions.push(recurring);
+    this.save();
+    return recurring;
+  }
+
+  // Goal operations
+  addGoal(goal) {
+    this.goals.push(goal);
+    this.save();
+    return goal;
   }
 }
 

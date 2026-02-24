@@ -160,6 +160,9 @@ class BudgetEngine {
     const source = this.store.getBudget(sourceMonth);
     if (!source) return null;
 
+    // Don't clone if target already exists
+    if (this.store.getBudget(targetMonth)) return null;
+
     const newBudget = new Budget({
       month: targetMonth,
       totalMonthlyIncome: source.totalMonthlyIncome,
@@ -172,6 +175,55 @@ class BudgetEngine {
     });
 
     return this.store.addBudget(newBudget);
+  }
+
+  autoCloneCurrentMonth() {
+    const now = new Date();
+    const currentMonth = monthKey(now);
+
+    // If current month already has a budget, nothing to do
+    if (this.store.getBudget(currentMonth)) return null;
+
+    // Find the most recent budget to clone from
+    const sortedBudgets = [...this.store.budgets].sort((a, b) => b.month.localeCompare(a.month));
+    if (sortedBudgets.length === 0) return null;
+
+    const source = sortedBudgets[0];
+    return this.cloneBudgetToMonth(source.month, currentMonth);
+  }
+
+  getBudgetComparison(month1, month2) {
+    const report1 = this.getMonthlyReport(month1);
+    const report2 = this.getMonthlyReport(month2);
+    if (!report1 || !report2) return null;
+
+    const comparison = {
+      month1,
+      month2,
+      income: { m1: report1.totalIncome, m2: report2.totalIncome, change: report2.totalIncome - report1.totalIncome },
+      expenses: { m1: report1.totalExpenses, m2: report2.totalExpenses, change: report2.totalExpenses - report1.totalExpenses },
+      savings: { m1: report1.actualSavings, m2: report2.actualSavings, change: report2.actualSavings - report1.actualSavings },
+      categories: [],
+    };
+
+    const allCategories = new Set([
+      ...report1.categoryReports.map(c => c.category),
+      ...report2.categoryReports.map(c => c.category),
+    ]);
+
+    for (const cat of allCategories) {
+      const r1 = report1.categoryReports.find(c => c.category === cat);
+      const r2 = report2.categoryReports.find(c => c.category === cat);
+      comparison.categories.push({
+        category: cat,
+        m1Spent: r1 ? r1.spent : 0,
+        m2Spent: r2 ? r2.spent : 0,
+        change: (r2 ? r2.spent : 0) - (r1 ? r1.spent : 0),
+      });
+    }
+
+    comparison.categories.sort((a, b) => Math.abs(b.change) - Math.abs(a.change));
+    return comparison;
   }
 }
 

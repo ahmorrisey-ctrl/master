@@ -3,6 +3,8 @@ const { Account, ACCOUNT_TYPES, INSTITUTIONS } = require('./models/Account');
 const { Transaction, TRANSACTION_TYPES, CATEGORIES } = require('./models/Transaction');
 const { Budget, BudgetCategory } = require('./models/Budget');
 const { NetWorthSnapshot } = require('./models/NetWorthSnapshot');
+const { RecurringTransaction, FREQUENCIES } = require('./models/RecurringTransaction');
+const { Goal, GOAL_TYPES } = require('./models/Goal');
 const { monthKey } = require('./utils/format');
 
 function generateDemoData(store) {
@@ -250,6 +252,161 @@ function generateDemoData(store) {
   }
 
   store.snapshots = snapshots;
+
+  // ═══════════════════════════════════════════════════
+  // RECURRING TRANSACTIONS
+  // ═══════════════════════════════════════════════════
+  const threeMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 3, 1).toISOString().split('T')[0];
+
+  store.recurringTransactions = [
+    new RecurringTransaction({
+      description: 'Salary Deposit',
+      amount: 7500.00,
+      type: 'income',
+      category: 'Salary',
+      accountId: chaseChecking.id,
+      frequency: FREQUENCIES.BIWEEKLY,
+      startDate: threeMonthsAgo,
+      dayOfMonth: 1,
+      lastGenerated: txDate(currentMonth, 15),
+    }),
+    new RecurringTransaction({
+      description: 'Rent Payment',
+      amount: 2200.00,
+      type: 'expense',
+      category: 'Housing',
+      accountId: chaseChecking.id,
+      frequency: FREQUENCIES.MONTHLY,
+      startDate: threeMonthsAgo,
+      dayOfMonth: 1,
+      lastGenerated: txDate(currentMonth, 1),
+    }),
+    new RecurringTransaction({
+      description: 'Health Insurance',
+      amount: 450.00,
+      type: 'expense',
+      category: 'Insurance',
+      accountId: chaseChecking.id,
+      frequency: FREQUENCIES.MONTHLY,
+      startDate: threeMonthsAgo,
+      dayOfMonth: 1,
+      lastGenerated: txDate(currentMonth, 1),
+    }),
+    new RecurringTransaction({
+      description: 'Car Insurance - GEICO',
+      amount: 125.00,
+      type: 'expense',
+      category: 'Insurance',
+      accountId: chaseChecking.id,
+      frequency: FREQUENCIES.MONTHLY,
+      startDate: threeMonthsAgo,
+      dayOfMonth: 1,
+      lastGenerated: txDate(currentMonth, 1),
+    }),
+    new RecurringTransaction({
+      description: 'Netflix',
+      amount: 15.99,
+      type: 'expense',
+      category: 'Subscriptions',
+      accountId: chaseCard.id,
+      frequency: FREQUENCIES.MONTHLY,
+      startDate: threeMonthsAgo,
+      dayOfMonth: 1,
+      lastGenerated: txDate(currentMonth, 1),
+    }),
+    new RecurringTransaction({
+      description: 'Spotify Premium',
+      amount: 10.99,
+      type: 'expense',
+      category: 'Subscriptions',
+      accountId: chaseCard.id,
+      frequency: FREQUENCIES.MONTHLY,
+      startDate: threeMonthsAgo,
+      dayOfMonth: 1,
+      lastGenerated: txDate(currentMonth, 1),
+    }),
+    new RecurringTransaction({
+      description: 'Gym Membership',
+      amount: 49.99,
+      type: 'expense',
+      category: 'Subscriptions',
+      accountId: chaseChecking.id,
+      frequency: FREQUENCIES.MONTHLY,
+      startDate: threeMonthsAgo,
+      dayOfMonth: 1,
+      lastGenerated: txDate(currentMonth, 1),
+    }),
+    new RecurringTransaction({
+      description: '401k Contribution',
+      amount: 1625.00,
+      type: 'transfer',
+      category: 'Investment',
+      accountId: chaseChecking.id,
+      toAccountId: vanguard401k.id,
+      frequency: FREQUENCIES.BIWEEKLY,
+      startDate: threeMonthsAgo,
+      dayOfMonth: 1,
+      lastGenerated: txDate(currentMonth, 16),
+    }),
+    new RecurringTransaction({
+      description: 'Internet - Comcast',
+      amount: 79.99,
+      type: 'expense',
+      category: 'Utilities',
+      accountId: chaseChecking.id,
+      frequency: FREQUENCIES.MONTHLY,
+      startDate: threeMonthsAgo,
+      dayOfMonth: 5,
+      lastGenerated: txDate(currentMonth, 5),
+    }),
+  ];
+
+  // ═══════════════════════════════════════════════════
+  // FINANCIAL GOALS
+  // ═══════════════════════════════════════════════════
+  store.goals = [
+    new Goal({
+      name: 'Emergency Fund (6 months)',
+      type: GOAL_TYPES.EMERGENCY_FUND,
+      targetAmount: 50000,
+      currentAmount: 33542.33,
+      deadline: '2026-12-31',
+      createdDate: '2025-06-01',
+      priority: 'high',
+      notes: 'Target: 6 months of expenses in checking + savings',
+    }),
+    new Goal({
+      name: 'Pay Off Chase Sapphire',
+      type: GOAL_TYPES.DEBT_PAYOFF,
+      targetAmount: 2847.52,
+      currentAmount: 0,
+      accountId: chaseCard.id,
+      deadline: '2026-06-30',
+      createdDate: '2026-01-01',
+      priority: 'high',
+    }),
+    new Goal({
+      name: 'Net Worth $500K',
+      type: GOAL_TYPES.NET_WORTH,
+      targetAmount: 500000,
+      currentAmount: 0,
+      deadline: '2027-12-31',
+      createdDate: '2025-01-01',
+      priority: 'medium',
+    }),
+    new Goal({
+      name: 'Max Roth IRA 2026',
+      type: GOAL_TYPES.INVESTMENT,
+      targetAmount: 7000,
+      currentAmount: 3500,
+      accountId: vanguardRoth.id,
+      deadline: '2026-12-31',
+      createdDate: '2026-01-01',
+      priority: 'medium',
+      notes: '2026 Roth IRA contribution limit',
+    }),
+  ];
+
   store.save();
 
   return store;

@@ -8,6 +8,8 @@ const { AmexManager } = require('./accounts/AmexManager');
 const { BudgetEngine } = require('./engines/BudgetEngine');
 const { NetWorthEngine } = require('./engines/NetWorthEngine');
 const { ReportEngine } = require('./engines/ReportEngine');
+const { RecurringEngine } = require('./engines/RecurringEngine');
+const { GoalsEngine } = require('./engines/GoalsEngine');
 const { Dashboard } = require('./ui/Dashboard');
 const { InteractiveCLI } = require('./ui/InteractiveCLI');
 const { generateDemoData } = require('./demo');
@@ -45,9 +47,11 @@ function main() {
   const budgetEngine = new BudgetEngine(store);
   const netWorthEngine = new NetWorthEngine(store);
   const reportEngine = new ReportEngine(store, budgetEngine, netWorthEngine);
+  const recurringEngine = new RecurringEngine(store);
+  const goalsEngine = new GoalsEngine(store, netWorthEngine);
 
   // Initialize UI
-  const dashboard = new Dashboard(store, budgetEngine, netWorthEngine, managers);
+  const dashboard = new Dashboard(store, budgetEngine, netWorthEngine, managers, goalsEngine, recurringEngine);
 
   if (isDashboard) {
     // Non-interactive: just print dashboard and exit
@@ -56,7 +60,7 @@ function main() {
   }
 
   // Interactive mode
-  const cli = new InteractiveCLI(dashboard, store, budgetEngine, netWorthEngine, reportEngine, managers);
+  const cli = new InteractiveCLI(dashboard, store, budgetEngine, netWorthEngine, reportEngine, managers, goalsEngine, recurringEngine);
   cli.start();
 }
 

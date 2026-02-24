@@ -2,15 +2,19 @@ const readline = require('readline');
 const { colorize, currency, pad, monthKey } = require('../utils/format');
 const { Transaction, TRANSACTION_TYPES, CATEGORIES } = require('../models/Transaction');
 const { BudgetCategory } = require('../models/Budget');
+const { GOAL_TYPES } = require('../models/Goal');
+const { FREQUENCIES } = require('../models/RecurringTransaction');
 
 class InteractiveCLI {
-  constructor(dashboard, dataStore, budgetEngine, netWorthEngine, reportEngine, managers) {
+  constructor(dashboard, dataStore, budgetEngine, netWorthEngine, reportEngine, managers, goalsEngine, recurringEngine) {
     this.dashboard = dashboard;
     this.store = dataStore;
     this.budget = budgetEngine;
     this.netWorth = netWorthEngine;
     this.report = reportEngine;
     this.managers = managers;
+    this.goals = goalsEngine || null;
+    this.recurring = recurringEngine || null;
     this.rl = null;
   }
 
@@ -19,6 +23,20 @@ class InteractiveCLI {
       input: process.stdin,
       output: process.stdout,
     });
+
+    // Auto-clone budget if needed
+    const cloned = this.budget.autoCloneCurrentMonth();
+    if (cloned) {
+      console.log(colorize(`\n  Budget auto-cloned to ${cloned.month} from previous month.\n`, 'yellow'));
+    }
+
+    // Generate pending recurring transactions
+    if (this.recurring) {
+      const generated = this.recurring.generatePendingTransactions();
+      if (generated.length > 0) {
+        console.log(colorize(`\n  Generated ${generated.length} recurring transaction(s).\n`, 'yellow'));
+      }
+    }
 
     this.showDashboard();
   }
@@ -39,7 +57,7 @@ class InteractiveCLI {
   }
 
   async handleMenuChoice() {
-    const choice = await this.prompt('Select option (0-9):');
+    const choice = await this.prompt('Select option:');
 
     switch (choice) {
       case '1': return this.showFullDashboard();
@@ -51,6 +69,9 @@ class InteractiveCLI {
       case '7': return this.showCredit();
       case '8': return this.showReports();
       case '9': return this.importExport();
+      case 'r': case 'R': return this.manageRecurring();
+      case 'g': case 'G': return this.manageGoals();
+      case 'f': case 'F': return this.showForecast();
       case '0':
       case 'q':
       case 'exit':
@@ -343,6 +364,7 @@ class InteractiveCLI {
     console.log('    ' + colorize('[3]', 'cyan') + '  View Category Breakdown');
     console.log('    ' + colorize('[4]', 'cyan') + '  Copy Budget to Next Month');
     console.log('    ' + colorize('[5]', 'cyan') + '  View Spending Trends (3 months)');
+    console.log('    ' + colorize('[6]', 'cyan') + '  Compare Months');
     console.log('    ' + colorize('[0]', 'cyan') + '  Back to Menu');
     console.log('');
 
@@ -354,6 +376,7 @@ class InteractiveCLI {
       case '3': return this.viewCategoryBreakdown();
       case '4': return this.copyBudget();
       case '5': return this.viewSpendingTrends();
+      case '6': return this.compareBudgets();
       case '0': return this.showDashboard();
       default: return this.manageBudget();
     }
@@ -445,7 +468,7 @@ class InteractiveCLI {
     if (result) {
       console.log(colorize(`\n  ✓ Budget copied to ${nextMonth}.\n`, 'green'));
     } else {
-      console.log(colorize('\n  No budget found for current month to copy.\n', 'yellow'));
+      console.log(colorize('\n  No budget found for current month to copy, or target month already has a budget.\n', 'yellow'));
     }
 
     await this.prompt('Press Enter to continue...');
@@ -465,6 +488,44 @@ class InteractiveCLI {
       console.log(colorize(`    ${month}: `, 'bold') + colorize(currency(data.total), 'red'));
       for (const [cat, amount] of Object.entries(data.byCategory).sort((a, b) => b[1] - a[1])) {
         console.log(`      ${pad(cat, 20)} ${currency(amount)}`);
+      }
+      console.log('');
+    }
+
+    await this.prompt('Press Enter to continue...');
+    return this.manageBudget();
+  }
+
+  async compareBudgets() {
+    const now = new Date();
+    const currentMonth = monthKey(now);
+    const lastMonth = monthKey(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+
+    const comparison = this.budget.getBudgetComparison(lastMonth, currentMonth);
+    console.log('');
+
+    if (!comparison) {
+      console.log(colorize('  Need budgets for both current and last month to compare.\n', 'yellow'));
+      await this.prompt('Press Enter to continue...');
+      return this.manageBudget();
+    }
+
+    console.log(colorize(`    Month-over-Month: ${comparison.month1} vs ${comparison.month2}`, 'bold'));
+    console.log('');
+
+    const incChange = comparison.income.change;
+    const expChange = comparison.expenses.change;
+    const savChange = comparison.savings.change;
+    console.log(`    Income:   ${currency(comparison.income.m1)} -> ${currency(comparison.income.m2)}  ${colorize((incChange >= 0 ? '+' : '') + currency(incChange), incChange >= 0 ? 'green' : 'red')}`);
+    console.log(`    Expenses: ${currency(comparison.expenses.m1)} -> ${currency(comparison.expenses.m2)}  ${colorize((expChange >= 0 ? '+' : '') + currency(expChange), expChange <= 0 ? 'green' : 'red')}`);
+    console.log(`    Savings:  ${currency(comparison.savings.m1)} -> ${currency(comparison.savings.m2)}  ${colorize((savChange >= 0 ? '+' : '') + currency(savChange), savChange >= 0 ? 'green' : 'red')}`);
+    console.log('');
+
+    if (comparison.categories.length > 0) {
+      console.log(colorize('    Category Changes:', 'bold'));
+      for (const c of comparison.categories.slice(0, 8)) {
+        const changeColor = c.change <= 0 ? 'green' : 'red';
+        console.log(`      ${pad(c.category, 20)} ${currency(c.m1Spent)} -> ${currency(c.m2Spent)}  ${colorize((c.change >= 0 ? '+' : '') + currency(c.change), changeColor)}`);
       }
       console.log('');
     }
@@ -675,6 +736,339 @@ class InteractiveCLI {
 
     await this.prompt('Press Enter to continue...');
     return this.importExport();
+  }
+
+  // ── RECURRING TRANSACTIONS ──────────────────────────────────────
+
+  async manageRecurring() {
+    console.clear();
+    console.log(this.dashboard.renderHeader());
+    console.log(this.dashboard.renderRecurringSummary());
+
+    console.log(colorize('  ── RECURRING TRANSACTIONS ──────────────────────────────────────', 'blue'));
+    console.log('');
+    console.log('    ' + colorize('[1]', 'cyan') + '  Add Recurring Transaction');
+    console.log('    ' + colorize('[2]', 'cyan') + '  View All Recurring');
+    console.log('    ' + colorize('[3]', 'cyan') + '  Pause/Resume Recurring');
+    console.log('    ' + colorize('[4]', 'cyan') + '  Remove Recurring');
+    console.log('    ' + colorize('[5]', 'cyan') + '  Generate Pending Transactions');
+    console.log('    ' + colorize('[6]', 'cyan') + '  View Upcoming (30 days)');
+    console.log('    ' + colorize('[0]', 'cyan') + '  Back to Menu');
+    console.log('');
+
+    const choice = await this.prompt('Select option:');
+
+    switch (choice) {
+      case '1': return this.addRecurring();
+      case '2': return this.viewRecurring();
+      case '3': return this.toggleRecurring();
+      case '4': return this.removeRecurring();
+      case '5': return this.generateRecurring();
+      case '6': return this.viewUpcoming();
+      case '0': return this.showDashboard();
+      default: return this.manageRecurring();
+    }
+  }
+
+  async addRecurring() {
+    console.log('');
+    const accounts = this.store.accounts;
+    if (accounts.length === 0) {
+      console.log(colorize('  No accounts found. Add an account first.\n', 'yellow'));
+      await this.prompt('Press Enter to continue...');
+      return this.manageRecurring();
+    }
+
+    const description = await this.prompt('Description (e.g., Rent, Salary):');
+    const amount = parseFloat(await this.prompt('Amount:')) || 0;
+
+    console.log('    Types: income, expense, transfer, payment');
+    const type = (await this.prompt('Type:')).toLowerCase() || 'expense';
+
+    const categoryList = Object.values(CATEGORIES);
+    console.log('');
+    const shortList = ['Salary', 'Housing', 'Utilities', 'Insurance', 'Subscriptions', 'Groceries', 'Transportation', 'Investment'];
+    shortList.forEach((c, i) => console.log(`    [${i + 1}] ${c}`));
+    const catInput = await this.prompt('Category (number or name):');
+    let category;
+    const catNum = parseInt(catInput);
+    if (!isNaN(catNum) && catNum > 0 && catNum <= shortList.length) {
+      category = shortList[catNum - 1];
+    } else {
+      category = catInput || 'Other Expense';
+    }
+
+    console.log('');
+    console.log('    Frequencies: weekly, biweekly, monthly, quarterly, yearly');
+    const frequency = (await this.prompt('Frequency (default: monthly):')).toLowerCase() || 'monthly';
+
+    accounts.forEach((a, i) => console.log(`    [${i + 1}] ${a.name} (${a.institution})`));
+    const accIdx = parseInt(await this.prompt('Account:')) - 1;
+    if (accIdx < 0 || accIdx >= accounts.length) return this.manageRecurring();
+
+    const dayOfMonth = parseInt(await this.prompt('Day of month (1-28, Enter for 1):')) || 1;
+
+    this.recurring.createRecurring({
+      description,
+      amount,
+      type,
+      category,
+      frequency,
+      accountId: accounts[accIdx].id,
+      dayOfMonth: Math.min(dayOfMonth, 28),
+      startDate: new Date().toISOString().split('T')[0],
+    });
+
+    console.log(colorize(`\n  ✓ Recurring transaction added: ${description} ${currency(amount)} (${frequency})\n`, 'green'));
+    await this.prompt('Press Enter to continue...');
+    return this.manageRecurring();
+  }
+
+  async viewRecurring() {
+    console.log('');
+    const all = this.store.recurringTransactions;
+    if (all.length === 0) {
+      console.log(colorize('  No recurring transactions.\n', 'yellow'));
+    } else {
+      for (const r of all) {
+        const status = r.active ? colorize('ACTIVE', 'green') : colorize('PAUSED', 'yellow');
+        const account = this.store.getAccount(r.accountId);
+        console.log(`    ${status}  ${pad(r.description, 25)} ${pad(currency(r.amount), 12, 'right')} ${pad(r.frequency, 10)} ${colorize(account ? account.name : '', 'gray')}`);
+      }
+      console.log('');
+    }
+
+    await this.prompt('Press Enter to continue...');
+    return this.manageRecurring();
+  }
+
+  async toggleRecurring() {
+    const all = this.store.recurringTransactions;
+    if (all.length === 0) {
+      console.log(colorize('\n  No recurring transactions.\n', 'yellow'));
+      await this.prompt('Press Enter to continue...');
+      return this.manageRecurring();
+    }
+
+    all.forEach((r, i) => {
+      const status = r.active ? colorize('ACTIVE', 'green') : colorize('PAUSED', 'yellow');
+      console.log(`    [${i + 1}] ${status}  ${r.description} - ${currency(r.amount)}`);
+    });
+
+    const idx = parseInt(await this.prompt('\n  Select:')) - 1;
+    if (idx >= 0 && idx < all.length) {
+      if (all[idx].active) {
+        this.recurring.pauseRecurring(all[idx].id);
+        console.log(colorize(`\n  ✓ Paused: ${all[idx].description}\n`, 'yellow'));
+      } else {
+        this.recurring.resumeRecurring(all[idx].id);
+        console.log(colorize(`\n  ✓ Resumed: ${all[idx].description}\n`, 'green'));
+      }
+    }
+
+    await this.prompt('Press Enter to continue...');
+    return this.manageRecurring();
+  }
+
+  async removeRecurring() {
+    const all = this.store.recurringTransactions;
+    if (all.length === 0) {
+      console.log(colorize('\n  No recurring transactions.\n', 'yellow'));
+      await this.prompt('Press Enter to continue...');
+      return this.manageRecurring();
+    }
+
+    all.forEach((r, i) => {
+      console.log(`    [${i + 1}] ${r.description} - ${currency(r.amount)} (${r.frequency})`);
+    });
+
+    const idx = parseInt(await this.prompt('\n  Select to remove:')) - 1;
+    if (idx >= 0 && idx < all.length) {
+      const confirm = await this.prompt(`Remove "${all[idx].description}"? (yes/no):`);
+      if (confirm.toLowerCase() === 'yes') {
+        this.recurring.removeRecurring(all[idx].id);
+        console.log(colorize('\n  ✓ Removed.\n', 'green'));
+      }
+    }
+
+    await this.prompt('Press Enter to continue...');
+    return this.manageRecurring();
+  }
+
+  async generateRecurring() {
+    const generated = this.recurring.generatePendingTransactions();
+    if (generated.length > 0) {
+      console.log(colorize(`\n  ✓ Generated ${generated.length} transaction(s):\n`, 'green'));
+      for (const tx of generated) {
+        console.log(`    ${tx.date}  ${pad(tx.description, 25)} ${currency(tx.amount)}`);
+      }
+    } else {
+      console.log(colorize('\n  No pending recurring transactions to generate.\n', 'yellow'));
+    }
+    console.log('');
+
+    await this.prompt('Press Enter to continue...');
+    return this.manageRecurring();
+  }
+
+  async viewUpcoming() {
+    const upcoming = this.recurring.getUpcoming(30);
+    console.log('');
+    if (upcoming.length === 0) {
+      console.log(colorize('  No upcoming recurring transactions in the next 30 days.\n', 'yellow'));
+    } else {
+      let totalUpcoming = 0;
+      for (const item of upcoming) {
+        const typeColor = item.recurring.type === 'income' ? 'green' : 'red';
+        console.log(`    ${colorize(item.date, 'gray')}  ${pad(item.recurring.description, 25)} ${colorize(currency(item.recurring.amount), typeColor)}  ${colorize(item.recurring.frequency, 'gray')}`);
+        if (item.recurring.type === 'expense') totalUpcoming += item.recurring.amount;
+        else totalUpcoming -= item.recurring.amount;
+      }
+      console.log('');
+      console.log(`    Expected net outflow: ${colorize(currency(totalUpcoming), totalUpcoming > 0 ? 'red' : 'green')}`);
+      console.log('');
+    }
+
+    await this.prompt('Press Enter to continue...');
+    return this.manageRecurring();
+  }
+
+  // ── FINANCIAL GOALS ─────────────────────────────────────────────
+
+  async manageGoals() {
+    console.clear();
+    console.log(this.dashboard.renderHeader());
+    console.log(this.dashboard.renderGoalsSummary());
+
+    console.log(colorize('  ── FINANCIAL GOALS ─────────────────────────────────────────────', 'blue'));
+    console.log('');
+    console.log('    ' + colorize('[1]', 'cyan') + '  Add New Goal');
+    console.log('    ' + colorize('[2]', 'cyan') + '  Update Goal Progress');
+    console.log('    ' + colorize('[3]', 'cyan') + '  Remove Goal');
+    console.log('    ' + colorize('[4]', 'cyan') + '  Sync Goals with Accounts');
+    console.log('    ' + colorize('[0]', 'cyan') + '  Back to Menu');
+    console.log('');
+
+    const choice = await this.prompt('Select option:');
+
+    switch (choice) {
+      case '1': return this.addGoal();
+      case '2': return this.updateGoal();
+      case '3': return this.removeGoal();
+      case '4': return this.syncGoals();
+      case '0': return this.showDashboard();
+      default: return this.manageGoals();
+    }
+  }
+
+  async addGoal() {
+    console.log('');
+    const name = await this.prompt('Goal name (e.g., Emergency Fund, Pay off Amex):');
+    const targetAmount = parseFloat(await this.prompt('Target amount:')) || 0;
+
+    const goalTypes = Object.values(GOAL_TYPES);
+    goalTypes.forEach((t, i) => console.log(`    [${i + 1}] ${t.replace('_', ' ')}`));
+    const typeIdx = parseInt(await this.prompt('Goal type:')) - 1;
+    const type = (typeIdx >= 0 && typeIdx < goalTypes.length) ? goalTypes[typeIdx] : 'savings';
+
+    const currentAmount = parseFloat(await this.prompt('Current progress ($0 if starting fresh):')) || 0;
+    const deadline = (await this.prompt('Deadline (YYYY-MM-DD, Enter for none):')) || null;
+
+    // Optionally link to an account
+    let accountId = null;
+    const linkAccount = await this.prompt('Link to account? (yes/no):');
+    if (linkAccount.toLowerCase() === 'yes') {
+      const accounts = this.store.accounts;
+      accounts.forEach((a, i) => console.log(`    [${i + 1}] ${a.name} (${a.institution})`));
+      const accIdx = parseInt(await this.prompt('Select account:')) - 1;
+      if (accIdx >= 0 && accIdx < accounts.length) {
+        accountId = accounts[accIdx].id;
+      }
+    }
+
+    console.log('    Priorities: low, medium, high');
+    const priority = (await this.prompt('Priority (default: medium):')) || 'medium';
+
+    this.goals.createGoal({
+      name,
+      type,
+      targetAmount,
+      currentAmount,
+      deadline,
+      accountId,
+      priority,
+    });
+
+    console.log(colorize(`\n  ✓ Goal created: "${name}" - Target ${currency(targetAmount)}\n`, 'green'));
+    await this.prompt('Press Enter to continue...');
+    return this.manageGoals();
+  }
+
+  async updateGoal() {
+    const goals = this.store.goals;
+    if (goals.length === 0) {
+      console.log(colorize('\n  No goals set.\n', 'yellow'));
+      await this.prompt('Press Enter to continue...');
+      return this.manageGoals();
+    }
+
+    goals.forEach((g, i) => {
+      console.log(`    [${i + 1}] ${g.name} - ${currency(g.currentAmount)} / ${currency(g.targetAmount)} (${g.getProgress().toFixed(0)}%)`);
+    });
+
+    const idx = parseInt(await this.prompt('\n  Select goal:')) - 1;
+    if (idx < 0 || idx >= goals.length) return this.manageGoals();
+
+    const newAmount = parseFloat(await this.prompt('New current amount:'));
+    if (!isNaN(newAmount)) {
+      this.goals.updateGoalProgress(goals[idx].id, newAmount);
+      console.log(colorize(`\n  ✓ Updated "${goals[idx].name}" to ${currency(newAmount)}\n`, 'green'));
+    }
+
+    await this.prompt('Press Enter to continue...');
+    return this.manageGoals();
+  }
+
+  async removeGoal() {
+    const goals = this.store.goals;
+    if (goals.length === 0) {
+      console.log(colorize('\n  No goals set.\n', 'yellow'));
+      await this.prompt('Press Enter to continue...');
+      return this.manageGoals();
+    }
+
+    goals.forEach((g, i) => {
+      console.log(`    [${i + 1}] ${g.name} - ${currency(g.targetAmount)}`);
+    });
+
+    const idx = parseInt(await this.prompt('\n  Select goal to remove:')) - 1;
+    if (idx >= 0 && idx < goals.length) {
+      const confirm = await this.prompt(`Remove "${goals[idx].name}"? (yes/no):`);
+      if (confirm.toLowerCase() === 'yes') {
+        this.goals.removeGoal(goals[idx].id);
+        console.log(colorize('\n  ✓ Goal removed.\n', 'green'));
+      }
+    }
+
+    await this.prompt('Press Enter to continue...');
+    return this.manageGoals();
+  }
+
+  async syncGoals() {
+    this.goals.syncGoalsWithAccounts();
+    console.log(colorize('\n  ✓ Goals synced with current account balances.\n', 'green'));
+    await this.prompt('Press Enter to continue...');
+    return this.manageGoals();
+  }
+
+  // ── NET WORTH FORECAST ──────────────────────────────────────────
+
+  async showForecast() {
+    console.clear();
+    console.log(this.dashboard.renderHeader());
+    console.log(this.dashboard.renderForecast());
+    await this.prompt('Press Enter to return to menu...');
+    return this.showDashboard();
   }
 }
 
