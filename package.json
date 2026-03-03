@@ -9,7 +9,14 @@
   "scripts": {
     "start": "node src/index.js",
     "demo": "node src/index.js --demo",
-    "test": "node src/test.js"
+    "test": "node src/test.js",
+    "clay": "node src/clay/index.js",
+    "clay:sync": "node src/clay/index.js --sync",
+    "clay:status": "node src/clay/index.js --status",
+    "clay:recipes": "node src/clay/index.js --recipes",
+    "clay:digest": "node src/clay/index.js --digest",
+    "clay:validate": "node src/clay/index.js --validate",
+    "clay:test": "node src/clay/test.js"
   },
   "keywords": ["budget", "net-worth", "finance", "tracker"],
   "license": "MIT"
